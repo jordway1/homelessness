@@ -1,0 +1,47 @@
+---
+title: "Homelessness in the United States"
+author: "James Ordway"
+date: "8/25/2020"
+output: html_document
+---
+
+## Libraries
+```{r libraries}
+library(tidyverse)
+library(readxl)
+```
+
+## Data Import
+
+[Data](https://www.hud.gov/2019-point-in-time-estimates-of-homelessness-in-US) was obtained from the U.S. Department of Housing.
+
+```{r import}
+#Read each excel sheet to a list
+path <- "coc_pit_counts.XLSX"
+homeless_list <- path %>%
+  excel_sheets() %>%
+  set_names() %>%
+  map(read_excel, path = path)
+
+#Standardize column names for each list element
+for(i in 1:13){
+  names(homeless_list[[i]]) <- str_remove(names(homeless_list[[i]]), ", \\d+")
+}
+
+#Bind rows of each list element
+homeless <- bind_rows(homeless_list[1:13], .id = "year")
+
+rm(homeless_list, i, path)
+```
+
+## First Look
+```{r}
+
+```
+
+## Analysis
+
+
+```{r pressure, echo=FALSE}
+
+```
