@@ -1,47 +1,277 @@
 ---
 title: "Homelessness in the United States"
 author: "James Ordway"
-date: "8/25/2020"
-output: html_document
+date: "9/8/2020"
+output: 
+  html_document:
+    theme: cosmo
+    code_folding: hide
+    toc: true
+    toc_depth: 3
 ---
-
-## Libraries
-```{r libraries}
+```{r libraries, message = FALSE}
+#Library Import
 library(tidyverse)
 library(readxl)
+library(httr)
+library(kableExtra)
+library(maps)
+library(ggrepel)
 ```
+# Introduction
 
-## Data Import
+This report will describe homelessness [data](https://www.hud.gov/2019-point-in-time-estimates-of-homelessness-in-US) from the **U.S. Department of Housing and Urban Development (HUD)**. My objective is to demonstrate my ability to perform data analysis and visualization while learning about an important social issue. This is not meant to be a comprehensive analysis of the data.
 
-[Data](https://www.hud.gov/2019-point-in-time-estimates-of-homelessness-in-US) was obtained from the U.S. Department of Housing.
+# HUD Data
+```{r import, message = FALSE}
+#Get HUD data from URL
+url <- "https://www.hud.gov/sites/dfiles/Main/documents/2007-2019_PIT_Counts_by_CoC.XLSX"
+response <- GET(url, write_disk(path <- tempfile(fileext = ".xlsx")))                      #!!Downloads temporary file to your disk!!
 
-```{r import}
-#Read each excel sheet to a list
-path <- "coc_pit_counts.XLSX"
+#Read each excel sheet into a list
 homeless_list <- path %>%
   excel_sheets() %>%
   set_names() %>%
-  map(read_excel, path = path)
+  purrr::map(read_excel, path = path)
 
 #Standardize column names for each list element
 for(i in 1:13){
   names(homeless_list[[i]]) <- str_remove(names(homeless_list[[i]]), ", \\d+")
 }
 
-#Bind rows of each list element
-homeless <- bind_rows(homeless_list[1:13], .id = "year")
-
-rm(homeless_list, i, path)
+homeless <- bind_rows(homeless_list[1:13], .id = "year")       #Bind rows of each list element to one object
+names(homeless) <- str_replace_all(names(homeless), " ", "_")  #Replace spaces in variable names
+homeless <- homeless %>% filter(CoC_Name != "Total")           #Filter out aggregate rows
+rm(homeless_list, i, path, url, response)                      #Remove unnecessary objects
 ```
 
-## First Look
+The *homeless* dataframe contains Point-In-Time estimates of homelessness from `r min(homeless$year)` to `r max(homeless$year)`. Data is reported by **Continuum of Care (CoC)** providers. [The CoC program](https://www.hudexchange.info/programs/coc/) is "designed to promote communitywide commitment to the goal of ending homelessness." The program provides funding for and collects data from various nonprofit and government entities that help combat homelessness in the United States. 
+
+Each observation in the data represents local homelessness estimates by a CoC provider for a certain year. There are `r n_distinct(homeless$CoC_Name)` unique CoC providers, and that has remained mostly constant since 2007. There are `r nrow(homeless)` observations in the data with an average of `r nrow(homeless) / n_distinct(homeless$year)` observations per year. 
+
+There are `r ncol(homeless) - 4` columns in the data that describe various states of homelessness. Some examples include: 
+
+* *Overall_Homeless* - the estimate of total homeless indivdiuals
+* *Sheltered_Total_Homeless* - the estimate of sheltered homeless individuals
+* *Homeless_Veterans* - the estimate of homeless veterans
+* *Homeless_Family_Households* - the estimate of homeless households
+
+
+# Analysis
+
+I will begin my analysis by providing some information on CoC providers. Then I will describe some key demographic information of homeless individuals. After that, I will compare the homelessness data to COVID-19 and population data.
+
+## CoC Providers
+Which CoC providers have been responsible for the most homeless individuals over the past five years? The following table shows the ten CoC providers that have accounted for the highest total number of homeless people in the U.S. over the past five years.
 ```{r}
+homeless %>%
+  filter(year > 2014) %>%
+  group_by(CoC_Name) %>%
+  summarize(total_homeless = sum(Overall_Homeless, na.rm = TRUE)) %>%
+  arrange(desc(total_homeless)) %>%
+  head(10) %>%
+  kbl(col.names = c("CoC Provider", "Total Homeless (5 Year Total)"), caption = "Highest-Volume CoC Providers From 2015 to 2019") %>%
+  kable_classic_2(html_font = "Serif") %>%
+  row_spec(10, background = "yellow")
+```
+
+Unsurprisingly, it seems that CoC providers in major cities deal with the highest volumes of American homeless individuals. Boston CoC ranks 10th on this list.
+
+The column *CoC_Category* is a categorical variable that can take the values: Rural CoCs, Suburband CoCs, Major Cities, or Other Urban CoCs. This data was made available in 2019, so all years prior have missing values for the variable. Since CoC providers have remained mostly constant throughout the years, I performed a self join to fill the column. Let's see how many CoC providers fall under each category and how many homeless individuals on average are accounted for by each type of provider.
+```{r}
+#Self join to fill values of CoC_Category
+homeless <- homeless %>% 
+  filter(year == 2019) %>%
+  select(CoC_Name, CoC_Category, CoC_Number) %>%
+  right_join(homeless, by = c('CoC_Name', 'CoC_Number'), suffix = c("", "_og")) %>%
+  select(-CoC_Category_og)
+
+homeless %>%
+  group_by(CoC_Category) %>%
+  summarize(CoC_Count = n(), average_homeless = mean(Overall_Homeless, na.rm = TRUE)) %>%
+  filter(!is.na(CoC_Category)) %>%
+  kbl(col.names = c("CoC Category", "CoC Count", "Average Homeless"), caption = "CoC Providers by Category") %>%
+  kable_classic_2(html_font = "Serif")
+```
+
+## Homeless Demographics
+The most basic question: how many people are homeless in the U.S. and how has that changed over time? 
+```{r}
+homeless %>%
+  group_by(year) %>%
+  summarize(count = sum(Overall_Homeless, na.rm = TRUE)) %>%
+  ggplot(aes(year, count)) +
+  geom_col(fill = "lightcyan4") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Total U.S. Homelessness Over Time", x = "Year", y = "Homeless Count", caption = "Source: hud.gov") +
+  theme_classic() +
+  theme(text = element_text(family = "serif"))
+```
+
+As you can see, total homelessness has stayed around roughly 600,000 since 2007. That number began to decline around 2013, but has increased again in 2019 to **567,715**. Let's take a look at how homeless estimates have changed over time, based on *CoC_Category*.
+
+```{r}
+homeless %>% 
+  group_by(year, CoC_Category) %>% 
+  summarize(count = sum(Overall_Homeless, na.rm = TRUE)) %>%
+  filter(CoC_Category != "NA") %>%
+  ggplot(aes(year, count, group = CoC_Category)) +
+  geom_line(aes(color = CoC_Category)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Homeless Demographics Over Time", x = "Year", y = "Homeless Count", color = "CoC Category",
+       caption = "Source: hud.gov") +
+  theme_classic() +
+  theme(text = element_text(family = "serif"))
 
 ```
 
-## Analysis
+This graph shows that major cities account for the highest number of homeless individuals. This number is on the rise, while the other categories appear to be more stable. Let's take a closer look at where homeless individuals are located by creating a heat map by U.S. state.
 
+```{r}
+states <- map_data("state")
+homeless <- homeless %>% 
+  mutate(state_abb = substr(CoC_Number, 0, 2))
+homeless$state <- str_to_lower(state.name[match(homeless$state_abb, state.abb)])
+homeless_map <- homeless %>% 
+  filter(year == 2019) %>%
+  group_by(state) %>%
+  summarize(total_homeless = sum(Overall_Homeless, na.rm = TRUE)) %>%
+  filter(!is.na(state)) %>%
+  right_join(states, by = c('state' = 'region'))
 
-```{r pressure, echo=FALSE}
+homeless_map %>% 
+  ggplot(aes(x = long, y = lat, group = group)) +
+  geom_polygon(aes(fill = total_homeless)) +
+  geom_path() +
+  scale_fill_distiller() +
+  theme_classic() +
+  labs(title = "Homelessness by U.S. State", fill = "Total Homeless", subtitle = "Heatmap of 2019 homeless estimates by state", 
+       caption = "Source: hud.gov") +
+  theme(axis.title = element_text(size = 0), axis.text = element_text(size = 0), axis.ticks = element_blank(), 
+        axis.line = element_blank(), panel.background = element_blank(), text = element_text(family = "serif")) 
+```
+
+While heatmaps have their drawbacks, it is clear that California and New York have the highest homeless populations.
+
+### Sheltered and Unsheltered Homelessness
+
+Not all homelessness is the same. The following table shows the counts and proportions of sheltered and unsheltered homeless individuals by year.
+
+```{r}
+shelter_homeless <- homeless %>% 
+  group_by(year) %>%
+  summarize(total_homeless = sum(Overall_Homeless, na.rm = TRUE), total_sheltered = sum(Sheltered_Total_Homeless, na.rm = TRUE),
+            total_unsheltered = sum(Unsheltered_Homeless)) %>%
+  mutate(sheltered_prop = total_sheltered / total_homeless, unsheltered_prop = total_unsheltered / total_homeless) %>%
+  arrange(desc(year)) 
+shelter_homeless %>%
+  kbl(col.names = c("Year", "Total Homeless", "Total Sheltered", "Total Unsheltered", "Proportion Sheltered", "Proportion Unsheltered"), caption = "Sheltered and Unsheltered Homelessness") %>%
+  kable_classic_2(html_font = "serif")
+```
+
+Good information, but a visualization here could be helpful. Let's see how proportions of sheltered vs unsheltered homelessness have changed over time with a stacked bar chart.
+
+```{r}
+shelter_homeless %>%
+  pivot_longer(cols = sheltered_prop:unsheltered_prop, names_to = 'names', values_to = 'values') %>%
+  ggplot(aes(year, values, fill = names)) +
+  geom_col() +
+  scale_fill_discrete(labels = c("Sheltered", "Unsheltered")) +
+  labs(title = "Homeless Proportion Sheltered vs Unsheltered", x = "Year", y = "Proportion", caption = "Source: hud.gov") +
+  theme_classic() +
+  theme(text = element_text("serif"), legend.title = element_blank())
+rm(shelter_homeless)
+```
+
+Well over 50% of homeless people are sheltered, and that has remained true over time. However, it appears that the amount of unsheltered homeless individuals relative to the total has been increasing in recent years.
+
+Finally, let's see which states account for the most unsheltered homeless individuals in 2019.
+```{r}
+homeless$state <- state.name[match(homeless$state_abb, state.abb)]
+homeless %>%
+  filter(year == 2019, !is.na(state)) %>%
+  group_by(state) %>%
+  summarize(total_unsheltered = sum(Unsheltered_Homeless, na.rm = TRUE)) %>%
+  arrange(desc(total_unsheltered)) %>% 
+  head(10) %>%
+  kbl(col.names = c("State", "Total Unsheltered"), caption = "States With Highest Unsheltered Homeless Populations") %>%
+  kable_classic_2(html_font = "serif") %>%
+  row_spec(1, background = "yellow")
+```
+California has by far the highest unsheltered homeless population in the country at 108,432 in 2019.
+
+### Other Homeless Types
+I will conclude my analysis by taking a quick look at some of the most vulnerable homeless subpopulations. The following table provides counts of the chronically homeless, homeless veterans, homeless children (under 18), and homeless youths (under 25). The table begins with the year 2011, the earliest that data was available for these variables.
+
+```{r}
+homeless %>%
+  group_by(year) %>%
+  summarize(chronic_homeless = sum(Chronically_Homeless), homeless_vets = sum(Homeless_Veterans),
+            homeless_children = sum(Homeless_Unaccompanied_Youth_Under_18), homeless_youths = sum(`Homeless_Unaccompanied_Youth_(Under_25)`)) %>%
+  filter(year > 2010) %>%
+  kbl(col.names = c("Year", "Chronically Homeless", "Homeless Veterans", "Homeless Children", "Homeless Youths")) %>%
+  kable_classic_2(html_font = "serif")
+```
+This table shows that the total number of chronically homeless has decreased since 2011, but began increasing again in 2018. Numbers of homeless veterans has decreased steadily, and numbers of homeless children and youths have stayed around 4,000 and 35,000, respectively.
+
+# Comparing Homelessness With Population and COVID-19 Data
+
+In this section I will compare homelessness data to COVID-19 data which I downloaded from the [New York Times COVID-19 github](https://github.com/nytimes/covid-19-data). I also obtained state population information from the [U.S. Census Bureau's website](https://www.census.gov/newsroom/press-kits/2019/national-state-estimates.html). The following table shows the 10 states with the highest number of homeless people per 10,000, and includes COVID-19 information.
+```{r, message = FALSE}
+#Most recent case and death estimates for each U.S. State
+covid_states <- read_csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv") %>%
+  filter(date == "2020-09-07") %>%
+  select(-c(fips, date))
+#Population
+state_populations <- read_csv("https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/national/totals/nst-est2019-alldata.csv") %>%
+  select(NAME, 'POPESTIMATE2019')
+
+#Join these datasets to homeless and create columns for cases, deaths and homeless per 10,000 residents
+homeless_states <- homeless %>%
+  filter(year == 2019) %>%
+  group_by(state) %>% 
+  summarize(total_homeless = sum(Overall_Homeless, na.rm =TRUE)) %>%
+  left_join(state_populations, by = c('state' = 'NAME')) %>%
+  left_join(covid_states, by = 'state') %>%
+  mutate(cases_per_10k = cases / (POPESTIMATE2019 / 10000), deaths_per_10k = deaths / (POPESTIMATE2019 / 10000), 
+         homeless_per_10k = total_homeless / (POPESTIMATE2019 / 10000))
+
+#Table
+homeless_states %>%
+  select(state, total_homeless, homeless_per_10k, cases_per_10k, deaths_per_10k) %>%
+  arrange(desc(homeless_per_10k)) %>%
+  head(10) %>%
+  kbl(col.names = c("State", "Total Homeless", "Homeless Per 10k", "Cases Per 10k", "Deaths Per 10k"), 
+                    caption = "Homelessness Density and COVID-19") %>%
+  kable_classic_2(html_font = "serif")
 
 ```
+
+Since homeless people are especially vulnerable during a public health crisis, it may be interesting to see if there is any relationship between homelessness and COVID cases and deaths. Perhaps states with higher densities of homeless populations would see an increase in number of cases or deaths per 10,000 residents?
+
+```{r, warning = FALSE}
+homeless_states %>%
+  ggplot(aes(homeless_per_10k, cases_per_10k)) +
+  geom_point(aes(size = POPESTIMATE2019), color = "dodgerblue3", shape = 1) + 
+  geom_text_repel(aes(label = ifelse(state %in% c("California", "New York", "Massachusetts"), state, '')), size = 3.5) +
+  labs(title = "Homeless Population Density vs COVID-19 Case Density in U.S. States", x = "Homeless Per 10k", y = "Cases Per 10k",
+       size = "Population 2019", caption = "Sources: hud.gov, census.gov, nytimes") +
+  theme_classic() + 
+  theme(text = element_text(family = "serif"), legend.title = element_text())
+
+homeless_states %>%
+  ggplot(aes(homeless_per_10k, deaths_per_10k)) +
+  geom_point(aes(size = POPESTIMATE2019), color = "dodgerblue3", shape = 1) + 
+  geom_text_repel(aes(label = ifelse(state %in% c("California", "New York", "Massachusetts"), state, '')), size = 3.5) +
+  labs(title = "Homeless Population Density vs COVID-19 Death Density in U.S. States", x = "Homeless Per 10k", y = "Deaths Per 10k",
+       size = "Population 2019", caption = "Sources: hud.gov, census.gov, nytimes") +
+  theme_classic() + 
+  theme(text = element_text(family = "serif"), legend.title = element_text())
+
+```
+
+From these scatter plots alone, there does not seem to be a relationship between homeless population density and COVID-19 cases or deaths per 10,000 people. 
+
+# Conclusion
+
+Thanks for reading! Again, this report was not meant to be a complete analysis of the HUD homelessness data, but hopefully you learned something about what homelessness looks like in the United States.
